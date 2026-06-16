@@ -1,6 +1,13 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { authReady, isLoggedIn } from '../store/auth'
 
 const routes = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('../pages/Login.vue'),
+    meta: { public: true },
+  },
   {
     path: '/',
     name: 'home',
@@ -23,7 +30,21 @@ const routes = [
   },
 ]
 
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes,
 })
+
+router.beforeEach(async (to) => {
+  await authReady
+
+  if (to.path === '/login' && isLoggedIn.value) {
+    return '/'
+  }
+
+  if (!to.meta.public && !isLoggedIn.value) {
+    return '/login'
+  }
+})
+
+export default router

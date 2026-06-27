@@ -1,7 +1,10 @@
-// Implementa as regras de negócio e operações CRUD de itens.
+﻿// Implementa as regras de negócio e operações CRUD de itens.
 import { pool } from '../db/client.js'
 
 const categoriasValidas = ['Lanche', 'Bebida', 'Sobremesa']
+
+const COLS_PUBLICOS = 'id, nome, descricao, preco, categoria, disponivel, criado_por, created_at, updated_at'
+const COLS_PRIVADOS = 'id, nome, descricao, preco, categoria, disponivel, criado_por, user_uid, created_at, updated_at'
 
 function parseDisponivel(value) {
   if (value === undefined) return undefined
@@ -11,7 +14,8 @@ function parseDisponivel(value) {
   return null
 }
 
-export async function getAll(req, res) {
+// Público: todos os itens, sem filtro de usuário
+export async function getPublicos(req, res) {
   try {
     const { categoria, disponivel } = req.query
     const conditions = []
@@ -33,12 +37,44 @@ export async function getAll(req, res) {
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const result = await pool.query(
-      `SELECT id, nome, descricao, preco, categoria, disponivel, created_at, updated_at FROM itens ${whereClause} ORDER BY id ASC`,
+      `SELECT ${COLS_PUBLICOS} FROM itens ${whereClause} ORDER BY id ASC`,
       values,
     )
 
     return res.json(result.rows)
-  } catch (error) {
+  } catch {
+    return res.status(500).json({ error: 'Erro ao listar itens.' })
+  }
+}
+
+// Privado: apenas itens do usuário logado
+export async function getAll(req, res) {
+  try {
+    const { categoria, disponivel } = req.query
+    const conditions = ['user_uid = $1']
+    const values = [req.user.uid]
+
+    if (categoria) {
+      values.push(categoria)
+      conditions.push(`categoria = $${values.length}`)
+    }
+
+    const disponivelParsed = parseDisponivel(disponivel)
+    if (disponivel !== undefined && disponivelParsed === null) {
+      return res.status(400).json({ error: 'Parâmetro "disponivel" deve ser true ou false.' })
+    }
+    if (disponivelParsed !== undefined) {
+      values.push(disponivelParsed)
+      conditions.push(`disponivel = $${values.length}`)
+    }
+
+    const result = await pool.query(
+      `SELECT ${COLS_PRIVADOS} FROM itens WHERE ${conditions.join(' AND ')} ORDER BY id ASC`,
+      values,
+    )
+
+    return res.json(result.rows)
+  } catch {
     return res.status(500).json({ error: 'Erro ao listar itens.' })
   }
 }
@@ -47,8 +83,8 @@ export async function getById(req, res) {
   try {
     const { id } = req.params
     const result = await pool.query(
-      'SELECT id, nome, descricao, preco, categoria, disponivel, created_at, updated_at FROM itens WHERE id = $1',
-      [id],
+      `SELECT ${COLS_PRIVADOS} FROM itens WHERE id = $1 AND user_uid = $2`,
+      [id, req.user.uid],
     )
 
     if (!result.rows.length) {
@@ -56,7 +92,7 @@ export async function getById(req, res) {
     }
 
     return res.json(result.rows[0])
-  } catch (error) {
+  } catch {
     return res.status(500).json({ error: 'Erro ao buscar item.' })
   }
 }
@@ -79,12 +115,14 @@ export async function create(req, res) {
     }
 
     const result = await pool.query(
-      'INSERT INTO itens (nome, descricao, preco, categoria, disponivel) VALUES ($1, $2, $3, $4, $5) RETURNING id, nome, descricao, preco, categoria, disponivel, created_at, updated_at',
-      [nome, descricao, preco, categoria, disponivelParsed],
+      `INSERT INTO itens (nome, descricao, preco, categoria, disponivel, criado_por, user_uid)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${COLS_PRIVADOS}`,
+      [nome, descricao, preco, categoria, disponivelParsed, req.user.name, req.user.uid],
     )
 
     return res.status(201).json(result.rows[0])
-  } catch (error) {
+  } catch {
     return res.status(500).json({ error: 'Erro ao criar item.' })
   }
 }
@@ -121,8 +159,11 @@ export async function update(req, res) {
     }
 
     values.push(id)
+    values.push(req.user.uid)
     const result = await pool.query(
-      `UPDATE itens SET ${updates.join(', ')}, updated_at = NOW() WHERE id = $${values.length} RETURNING id, nome, descricao, preco, categoria, disponivel, created_at, updated_at`,
+      `UPDATE itens SET ${updates.join(', ')}, updated_at = NOW()
+       WHERE id = $${values.length - 1} AND user_uid = $${values.length}
+       RETURNING ${COLS_PRIVADOS}`,
       values,
     )
 
@@ -131,7 +172,7 @@ export async function update(req, res) {
     }
 
     return res.json(result.rows[0])
-  } catch (error) {
+  } catch {
     return res.status(500).json({ error: 'Erro ao atualizar item.' })
   }
 }
@@ -139,14 +180,17 @@ export async function update(req, res) {
 export async function remove(req, res) {
   try {
     const { id } = req.params
-    const result = await pool.query('DELETE FROM itens WHERE id = $1 RETURNING id', [id])
+    const result = await pool.query(
+      'DELETE FROM itens WHERE id = $1 AND user_uid = $2 RETURNING id',
+      [id, req.user.uid],
+    )
 
     if (!result.rows.length) {
       return res.status(404).json({ error: 'Item não encontrado.' })
     }
 
     return res.status(204).send()
-  } catch (error) {
+  } catch {
     return res.status(500).json({ error: 'Erro ao remover item.' })
   }
 }
